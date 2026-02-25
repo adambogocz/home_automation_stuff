@@ -1,0 +1,499 @@
+blueprint:
+  name: Solar boiler dump (battery + surplus)
+  description: >
+    Drives a water-heater switch to maximize self-consumption when grid export is disabled.
+
+    Priority:
+    - Turn OFF on grid import (inverter overload protection)
+    - If battery is full, turn ON and keep ON until a lower SoC threshold (hysteresis)
+    - Otherwise, turn ON when battery is charging with enough surplus power (with SoC threshold + optional forecast boost)
+  domain: automation
+
+  input:
+    water_heater_switch:
+      name: Water heater switch
+      description: Switch that powers the boiler/heater.
+      selector:
+        entity:
+          domain: switch
+
+    battery_soc_sensor:
+      name: Battery state of charge sensor
+      description: Battery SoC in % (0-100).
+      selector:
+        entity:
+          domain: sensor
+
+    grid_import_power_sensor:
+      name: Grid import power sensor
+      description: Power imported from grid in W (positive = importing).
+      selector:
+        entity:
+          domain: sensor
+
+    battery_charge_power_sensor:
+      name: Battery charge power sensor
+      description: Battery charging power in W (positive when charging).
+      selector:
+        entity:
+          domain: sensor
+
+    excess_power_sensor:
+      name: Excess/clipped power sensor (optional)
+      description: >
+        Optional sensor that already represents available excess power in W.
+        If set, it is used instead of battery charge power for surplus detection.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    solar_forecast_today_sensor:
+      name: Solar forecast today (optional)
+      description: Optional forecast sensor for today's production (typically kWh).
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    heater_power_w:
+      name: Heater power draw (W)
+      description: Nameplate power draw of the water heater.
+      default: 2300
+      selector:
+        number:
+          min: 200
+          max: 10000
+          step: 50
+          mode: box
+          unit_of_measurement: W
+
+    power_margin_w:
+      name: Power margin (W)
+      description: Extra margin required on top of heater draw before turning on.
+      default: 200
+      selector:
+        number:
+          min: 0
+          max: 2000
+          step: 50
+          mode: box
+          unit_of_measurement: W
+
+    soc_full_on:
+      name: Full-battery ON threshold (%)
+      description: When SoC reaches this value, dump mode turns the heater on.
+      default: 100
+      selector:
+        number:
+          min: 50
+          max: 100
+          step: 1
+          mode: slider
+          unit_of_measurement: "%"
+
+    soc_full_off:
+      name: Full-battery OFF threshold (%)
+      description: In dump mode, heater turns off when SoC falls to this value.
+      default: 90
+      selector:
+        number:
+          min: 10
+          max: 99
+          step: 1
+          mode: slider
+          unit_of_measurement: "%"
+
+    soc_min_surplus_on:
+      name: Surplus mode minimum SoC to turn ON (%)
+      description: Only preheat on surplus when battery SoC is at least this value.
+      default: 75
+      selector:
+        number:
+          min: 10
+          max: 100
+          step: 1
+          mode: slider
+          unit_of_measurement: "%"
+
+    soc_min_surplus_off:
+      name: Surplus mode minimum SoC to keep ON (%)
+      description: Hysteresis for surplus mode. Turn off if SoC drops below this value.
+      default: 70
+      selector:
+        number:
+          min: 5
+          max: 100
+          step: 1
+          mode: slider
+          unit_of_measurement: "%"
+
+    grid_import_off_w:
+      name: Grid import trip threshold (W)
+      description: If grid import exceeds this threshold, the heater is turned off.
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 5000
+          step: 10
+          mode: box
+          unit_of_measurement: W
+
+    grid_import_clear_w:
+      name: Grid import clear threshold (W)
+      description: Grid import must be at or below this value to allow turning the heater on.
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 5000
+          step: 10
+          mode: box
+          unit_of_measurement: W
+
+    grid_import_trip_for:
+      name: Grid import trip time
+      description: How long grid import must exceed the trip threshold before turning off.
+      default:
+        seconds: 5
+      selector:
+        duration:
+
+    surplus_on_delay:
+      name: Surplus ON delay
+      description: How long surplus conditions must be true before turning on.
+      default:
+        seconds: 60
+      selector:
+        duration:
+
+    surplus_off_delay:
+      name: Surplus OFF delay
+      description: How long surplus conditions must be false before turning off.
+      default:
+        seconds: 120
+      selector:
+        duration:
+
+    min_on_time:
+      name: Minimum ON time
+      description: Prevents rapid toggling OFF after turning ON (not applied for grid import safety).
+      default:
+        minutes: 5
+      selector:
+        duration:
+
+    min_off_time:
+      name: Minimum OFF time
+      description: Prevents rapid toggling ON after turning OFF.
+      default:
+        minutes: 5
+      selector:
+        duration:
+
+    forecast_high_kwh:
+      name: Forecast considered high (kWh)
+      description: If forecast is at/above this value, surplus mode can start earlier.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.5
+          mode: box
+          unit_of_measurement: kWh
+
+    soc_min_surplus_on_when_forecast_high:
+      name: Surplus ON SoC when forecast is high (%)
+      description: When forecast is high, use this SoC threshold instead of the normal one.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          mode: slider
+          unit_of_measurement: "%"
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: homeassistant
+    event: start
+  - platform: time_pattern
+    seconds: "/30"
+  - platform: state
+    entity_id: !input battery_soc_sensor
+  - platform: state
+    entity_id: !input grid_import_power_sensor
+  - platform: state
+    entity_id: !input battery_charge_power_sensor
+
+condition: []
+
+action:
+  - variables:
+      heater_switch: !input water_heater_switch
+      soc_sensor: !input battery_soc_sensor
+      grid_import_sensor: !input grid_import_power_sensor
+      charge_power_sensor: !input battery_charge_power_sensor
+      excess_power_sensor: !input excess_power_sensor
+      forecast_sensor: !input solar_forecast_today_sensor
+
+      heater_power_w: !input heater_power_w
+      power_margin_w: !input power_margin_w
+
+      soc_full_on: !input soc_full_on
+      soc_full_off: !input soc_full_off
+      soc_min_surplus_on: !input soc_min_surplus_on
+      soc_min_surplus_off: !input soc_min_surplus_off
+
+      grid_import_off_w: !input grid_import_off_w
+      grid_import_clear_w: !input grid_import_clear_w
+
+      grid_import_trip_for: !input grid_import_trip_for
+      surplus_on_delay: !input surplus_on_delay
+      surplus_off_delay: !input surplus_off_delay
+      min_on_time: !input min_on_time
+      min_off_time: !input min_off_time
+
+      forecast_high_kwh: !input forecast_high_kwh
+      soc_min_surplus_on_when_forecast_high: !input soc_min_surplus_on_when_forecast_high
+
+      soc: "{{ states(soc_sensor) | float(0) }}"
+      grid_import_w: "{{ states(grid_import_sensor) | float(0) }}"
+      charge_w: "{{ states(charge_power_sensor) | float(0) }}"
+      excess_w: >-
+        {% if (excess_power_sensor | string) | length > 0 %}
+          {{ states(excess_power_sensor) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      forecast_today: >-
+        {% if (forecast_sensor | string) | length > 0 %}
+          {{ states(forecast_sensor) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+
+      heater_is_on: "{{ is_state(heater_switch, 'on') }}"
+      last_change_s: "{{ as_timestamp(states[heater_switch].last_changed) }}"
+      since_change_s: "{{ as_timestamp(now()) - last_change_s }}"
+
+      min_on_s: "{{ as_timedelta(min_on_time).total_seconds() | float(0) }}"
+      min_off_s: "{{ as_timedelta(min_off_time).total_seconds() | float(0) }}"
+      grid_trip_s: "{{ as_timedelta(grid_import_trip_for).total_seconds() | float(0) }}"
+      surplus_on_s: "{{ as_timedelta(surplus_on_delay).total_seconds() | float(0) }}"
+      surplus_off_s: "{{ as_timedelta(surplus_off_delay).total_seconds() | float(0) }}"
+
+      forecast_enabled: "{{ (forecast_sensor | string) | length > 0 }}"
+      forecast_high: "{{ forecast_enabled and (forecast_today >= (forecast_high_kwh | float(0))) }}"
+      effective_soc_min_on: >-
+        {% if forecast_high %}
+          {{ soc_min_surplus_on_when_forecast_high | float(0) }}
+        {% else %}
+          {{ soc_min_surplus_on | float(0) }}
+        {% endif %}
+
+      required_surplus_w: "{{ (heater_power_w | float(0)) + (power_margin_w | float(0)) }}"
+      surplus_source_w: >-
+        {% if (excess_power_sensor | string) | length > 0 %}
+          {{ excess_w }}
+        {% else %}
+          {{ charge_w }}
+        {% endif %}
+
+      importing_grid_now: "{{ grid_import_w > (grid_import_off_w | float(0)) }}"
+      grid_clear_now: "{{ grid_import_w <= (grid_import_clear_w | float(0)) }}"
+
+      dump_should_start: "{{ soc >= (soc_full_on | float(0)) and grid_clear_now }}"
+      surplus_should_start: >-
+        {{ (soc >= (effective_soc_min_on | float(0)))
+           and grid_clear_now
+           and (surplus_source_w >= (required_surplus_w | float(0))) }}
+
+  - choose:
+      # Safety: if we're importing from grid, turn heater off (after trip time).
+      - conditions:
+          - condition: template
+            value_template: "{{ importing_grid_now }}"
+          - condition: template
+            value_template: "{{ heater_is_on }}"
+        sequence:
+          - delay:
+              seconds: "{{ grid_trip_s | int(0) }}"
+          - condition: template
+            value_template: "{{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0)) }}"
+          - service: switch.turn_off
+            target:
+              entity_id: !input water_heater_switch
+
+      # Full-battery dump mode: turn on at full and keep on until lower SoC.
+      - conditions:
+          - condition: template
+            value_template: "{{ (not heater_is_on) and dump_should_start }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ since_change_s < (min_off_s | float(0)) }}"
+                sequence:
+                  - delay:
+                      seconds: "{{ ((min_off_s | float(0)) - since_change_s) | round(0) | int(0) }}"
+          - condition: template
+            value_template: "{{ (states(grid_import_sensor) | float(0)) <= (grid_import_clear_w | float(0)) }}"
+          - service: switch.turn_on
+            target:
+              entity_id: !input water_heater_switch
+          - wait_template: >-
+              {{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0))
+                 or (states(soc_sensor) | float(0)) <= (soc_full_off | float(0)) }}
+          - variables:
+              dump_stop_import: "{{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0)) }}"
+              dump_stop_soc: "{{ (states(soc_sensor) | float(0)) <= (soc_full_off | float(0)) }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ dump_stop_import }}"
+                sequence:
+                  - delay:
+                      seconds: "{{ grid_trip_s | int(0) }}"
+                  - condition: template
+                    value_template: "{{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0)) }}"
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input water_heater_switch
+              - conditions:
+                  - condition: template
+                    value_template: "{{ (not dump_stop_import) and dump_stop_soc }}"
+                sequence:
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input water_heater_switch
+
+      # Surplus mode: preheat when charging power (or excess power) is enough.
+      - conditions:
+          - condition: template
+            value_template: "{{ (not heater_is_on) and surplus_should_start }}"
+        sequence:
+          - delay:
+              seconds: "{{ surplus_on_s | int(0) }}"
+          - variables:
+              soc_now: "{{ states(soc_sensor) | float(0) }}"
+              grid_now: "{{ states(grid_import_sensor) | float(0) }}"
+              charge_now: "{{ states(charge_power_sensor) | float(0) }}"
+              excess_now: >-
+                {% if (excess_power_sensor | string) | length > 0 %}
+                  {{ states(excess_power_sensor) | float(0) }}
+                {% else %}
+                  0
+                {% endif %}
+              surplus_now: >-
+                {% if (excess_power_sensor | string) | length > 0 %}
+                  {{ excess_now }}
+                {% else %}
+                  {{ charge_now }}
+                {% endif %}
+              effective_soc_min_on_now: >-
+                {% if forecast_enabled and ((forecast_sensor | string) | length > 0) and (states(forecast_sensor) | float(0) >= (forecast_high_kwh | float(0))) %}
+                  {{ soc_min_surplus_on_when_forecast_high | float(0) }}
+                {% else %}
+                  {{ soc_min_surplus_on | float(0) }}
+                {% endif %}
+          - condition: template
+            value_template: >-
+              {{ (grid_now <= (grid_import_clear_w | float(0)))
+                 and (soc_now >= (effective_soc_min_on_now | float(0)))
+                 and (surplus_now >= (required_surplus_w | float(0))) }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ since_change_s < (min_off_s | float(0)) }}"
+                sequence:
+                  - delay:
+                      seconds: "{{ ((min_off_s | float(0)) - since_change_s) | round(0) | int(0) }}"
+          - service: switch.turn_on
+            target:
+              entity_id: !input water_heater_switch
+          - wait_template: >-
+              {{
+                (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0))
+                or (states(soc_sensor) | float(0)) <= (soc_min_surplus_off | float(0))
+                or (
+                  (
+                    (
+                      (
+                        (excess_power_sensor | string) | length > 0
+                        and (states(excess_power_sensor) | float(0)) < (required_surplus_w | float(0))
+                      )
+                      or
+                      (
+                        ((excess_power_sensor | string) | length == 0)
+                        and (states(charge_power_sensor) | float(0)) < (required_surplus_w | float(0))
+                      )
+                    )
+                  )
+                )
+              }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0)) }}"
+                sequence:
+                  - delay:
+                      seconds: "{{ grid_trip_s | int(0) }}"
+                  - condition: template
+                    value_template: "{{ (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0)) }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ (states(grid_import_sensor) | float(0)) <= (grid_import_off_w | float(0)) }}"
+                sequence:
+                  - delay:
+                      seconds: "{{ surplus_off_s | int(0) }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{
+                        is_state(heater_switch, 'on')
+                        and (
+                          (states(grid_import_sensor) | float(0)) > (grid_import_off_w | float(0))
+                          or (states(soc_sensor) | float(0)) <= (soc_min_surplus_off | float(0))
+                          or (
+                            (
+                              (excess_power_sensor | string) | length > 0
+                              and (states(excess_power_sensor) | float(0)) < (required_surplus_w | float(0))
+                            )
+                            or
+                            (
+                              ((excess_power_sensor | string) | length == 0)
+                              and (states(charge_power_sensor) | float(0)) < (required_surplus_w | float(0))
+                            )
+                          )
+                        )
+                      }}
+                sequence:
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                (states(grid_import_sensor) | float(0)) <= (grid_import_off_w | float(0))
+                                and ((as_timestamp(now()) - as_timestamp(states[heater_switch].last_changed)) < (min_on_s | float(0)))
+                              }}
+                        sequence:
+                          - delay:
+                              seconds: >-
+                                {{
+                                  (
+                                    (min_on_s | float(0))
+                                    - (as_timestamp(now()) - as_timestamp(states[heater_switch].last_changed))
+                                  ) | round(0) | int(0)
+                                }}
+                  - service: switch.turn_off
+                    target:
+                      entity_id: !input water_heater_switch
+    default: []
+
