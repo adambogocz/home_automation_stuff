@@ -282,11 +282,41 @@ action:
       last_change_s: "{{ as_timestamp(states[heater_switch].last_changed) }}"
       since_change_s: "{{ as_timestamp(now()) - last_change_s }}"
 
-      min_on_s: "{{ as_timedelta(min_on_time).total_seconds() | float(0) }}"
-      min_off_s: "{{ as_timedelta(min_off_time).total_seconds() | float(0) }}"
-      grid_trip_s: "{{ as_timedelta(grid_import_trip_for).total_seconds() | float(0) }}"
-      surplus_on_s: "{{ as_timedelta(surplus_on_delay).total_seconds() | float(0) }}"
-      surplus_off_s: "{{ as_timedelta(surplus_off_delay).total_seconds() | float(0) }}"
+      min_on_s: >-
+        {{
+          (min_on_time.get('days', 0) | int(0)) * 86400
+          + (min_on_time.get('hours', 0) | int(0)) * 3600
+          + (min_on_time.get('minutes', 0) | int(0)) * 60
+          + (min_on_time.get('seconds', 0) | int(0))
+        }}
+      min_off_s: >-
+        {{
+          (min_off_time.get('days', 0) | int(0)) * 86400
+          + (min_off_time.get('hours', 0) | int(0)) * 3600
+          + (min_off_time.get('minutes', 0) | int(0)) * 60
+          + (min_off_time.get('seconds', 0) | int(0))
+        }}
+      grid_trip_s: >-
+        {{
+          (grid_import_trip_for.get('days', 0) | int(0)) * 86400
+          + (grid_import_trip_for.get('hours', 0) | int(0)) * 3600
+          + (grid_import_trip_for.get('minutes', 0) | int(0)) * 60
+          + (grid_import_trip_for.get('seconds', 0) | int(0))
+        }}
+      surplus_on_s: >-
+        {{
+          (surplus_on_delay.get('days', 0) | int(0)) * 86400
+          + (surplus_on_delay.get('hours', 0) | int(0)) * 3600
+          + (surplus_on_delay.get('minutes', 0) | int(0)) * 60
+          + (surplus_on_delay.get('seconds', 0) | int(0))
+        }}
+      surplus_off_s: >-
+        {{
+          (surplus_off_delay.get('days', 0) | int(0)) * 86400
+          + (surplus_off_delay.get('hours', 0) | int(0)) * 3600
+          + (surplus_off_delay.get('minutes', 0) | int(0)) * 60
+          + (surplus_off_delay.get('seconds', 0) | int(0))
+        }}
 
       forecast_enabled: "{{ (forecast_sensor | string) | length > 0 }}"
       forecast_high: "{{ forecast_enabled and (forecast_today >= (forecast_high_kwh | float(0))) }}"
